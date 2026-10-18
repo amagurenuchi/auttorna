@@ -1,0 +1,35 @@
+{
+  "weights": "weights.pt",
+  "model_variant": "base",
+  "patch_size": 16,
+  "device": "auto",
+  "class_names": [
+    "arrow",
+    "receptor"
+  ],
+  "confidence": 0.3,
+  "capture": {
+    "source": "window",
+    "backend": "pillow",
+    "monitor": 1,
+    "window_title": "Etterna"
+  },
+  "inference": {
+    "max_fps": 20,
+    "resolution": 576
+  },
+  "actions": {
+    "enabled": false,
+    "activation_frames": 2,
+    "release_frames": 3,
+    "cooldown_seconds": 0.15,
+    "class_to_key": {},
+    "action_keys": {
+      "Left": "z",
+      "Down": "x",
+      "Up": ",",
+      "Right": "."
+    }
+  },
+  "emergency_hotkey": "f12"
+}
