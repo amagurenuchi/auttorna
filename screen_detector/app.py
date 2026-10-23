@@ -9,12 +9,15 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
-from .capture import ScreenCapture, windows
+from .capture import create_capture, windows
 from .config import Settings
 from .debug import logger
 from .keyboard import KeyboardController
 from .model import RFDetector
 from .orientation import arrow_orientation
+from .pipeline import VisionPipeline
+from .control.scheduler import Scheduler
+from .timing import TimingRecorder
 
 
 class App:
@@ -56,7 +59,14 @@ class App:
         self.input_button = ttk.Button(controls, text="Arm input", command=self.toggle_input); self.input_button.pack(side="left", padx=6)
         self.input_status = tk.StringVar(value="Input disarmed"); ttk.Label(controls, textvariable=self.input_status).pack(side="left")
         ttk.Label(self.root, textvariable=self.status).pack(pady=4)
-        self.running = False; self.worker: threading.Thread | None = None; self.frames: queue.Queue = queue.Queue(maxsize=1); self.controller = None
+        self.predictive_dry_run = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            self.root,
+            text="Predictive tap dry-run (log only)",
+            variable=self.predictive_dry_run,
+        ).pack(anchor="w", padx=8)
+        self.running = False; self.worker: threading.Thread | None = None; self.frames: queue.Queue = queue.Queue(maxsize=1); self.controller = None; self.scheduler = None
+        self.timing = TimingRecorder()
         self.root.bind_all("<F12>", lambda _event: self.emergency_stop())
         self.root.protocol("WM_DELETE_WINDOW", self.close); self.root.after(40, self.render)
 
@@ -72,23 +82,61 @@ class App:
 
     def loop(self) -> None:
         try:
-            detector = RFDetector(self.settings.weights, self.settings.model_variant, self.settings.device, self.settings.class_names, self.settings.confidence, self.settings.patch_size, self.settings.resolution)
-            capture = ScreenCapture(self.settings.capture_source, self.settings.monitor, self.settings.window_title, self.settings.capture_backend)
+            if self.settings.inference_backend == "pytorch":
+                detector = RFDetector(self.settings.weights, self.settings.model_variant, self.settings.device, self.settings.class_names, self.settings.confidence, self.settings.patch_size, self.settings.resolution)
+            else:
+                from .inference import OnnxRuntimeDetector
+                provider = "directml" if self.settings.inference_backend == "directml" else self.settings.inference_backend
+                detector = OnnxRuntimeDetector(self.settings.onnx_model, self.settings.class_names, self.settings.confidence, self.settings.resolution, provider)
+            capture = create_capture(self.settings)
             keyboard = KeyboardController(self.settings.class_to_key, self.settings.activation_frames, self.settings.release_frames, self.settings.cooldown_seconds)
             self.controller = keyboard
+            predictive = VisionPipeline(
+                self.settings.lanes,
+                self.settings.receptor_y,
+                self.settings.scroll_speed_px_per_s,
+                global_offset_ms=self.settings.global_offset_ms,
+                timing=self.timing,
+            ) if self.predictive_dry_run.get() and self.settings.lanes else None
+            dry_backend = None
+            if predictive is not None:
+                from .pipeline import DryRunBackend
+                dry_backend = DryRunBackend()
+                self.scheduler = Scheduler(dry_backend, stale_timeout_ms=self.settings.stall_timeout_ms)
+                self.scheduler.start()
+                self.scheduler.arm()
             overlap_actions: set[tuple[int, int, str]] = set()
             last_detection_log = 0.0
+            last_prediction_log = 0.0
             delay = 1 / max(1, self.settings.max_fps)
             while self.running:
                 if self._f12_pressed():
                     self.running = False
                     keyboard.release_all()
                     break
-                started = time.monotonic(); frame, _ = capture.read(); detections = detector.predict(frame)
+                started = time.monotonic()
+                with self.timing.stage("capture"):
+                    captured = capture.read()
+                if self.scheduler is not None:
+                    self.scheduler.mark_frame(captured.captured_at_ns)
+                frame = captured.frame
+                with self.timing.stage("inference"):
+                    detections = detector.predict(frame)
+                predictions = predictive.update(detections, captured.captured_at_ns) if predictive is not None else []
+                if self.scheduler is not None:
+                    for event in predictions:
+                        self.scheduler.schedule(event.target_ns, event.lane, note_id=event.note_id)
                 if started - last_detection_log >= 1.0:
                     summary = ", ".join(f"{d.label}:{d.confidence:.2f}" for d in detections) or "none"
                     logger.info("detections=%d [%s]", len(detections), summary)
                     last_detection_log = started
+                if predictions and started - last_prediction_log >= 0.25:
+                    summary = ", ".join(
+                        f"note={event.note_id} lane={event.lane} target={event.target_ns}"
+                        for event in predictions
+                    )
+                    logger.info("predictive dry-run: %s", summary)
+                    last_prediction_log = started
                 current_actions: set[tuple[int, int, str]] = set()
                 arrows = [d for d in detections if d.label.lower() == "arrow"]
                 receptors = [d for d in detections if d.label.lower() == "receptor"]
@@ -96,13 +144,16 @@ class App:
                     for arrow_index, arrow in enumerate(arrows):
                         for receptor_index, receptor in enumerate(receptors):
                             if self._overlaps(arrow.box, receptor.box):
-                                direction = arrow_orientation(frame, arrow.box)
+                                with self.timing.stage("orientation"):
+                                    direction = arrow_orientation(frame, arrow.box)
                                 event = (arrow_index, receptor_index, direction)
                                 current_actions.add(event)
                                 if event not in overlap_actions:
                                     key = self.settings.action_keys.get(direction, "")
                                     logger.info("arrow/receptor overlap: direction=%s key=%r", direction, key)
-                                    if key: KeyboardController.tap_key(key)
+                                    if key:
+                                        with self.timing.stage("input"):
+                                            KeyboardController.tap_key(key)
                 overlap_actions = current_actions
                 image = Image.fromarray(frame); draw = ImageDraw.Draw(image)
                 for d in detections:
@@ -111,9 +162,15 @@ class App:
                 try: self.frames.put_nowait((image.copy(), len(detections), 1 / max(0.001, time.monotonic() - started)))
                 except queue.Full: pass
                 time.sleep(max(0, delay - (time.monotonic() - started)))
+            if self.scheduler is not None:
+                self.scheduler.stop()
+                self.scheduler = None
             keyboard.release_all(); capture.close()
         except Exception as exc:
             logger.exception("detection stopped because of an error: %s", exc)
+            if self.scheduler is not None:
+                self.scheduler.stop()
+                self.scheduler = None
             self.frames.put((None, 0, 0, str(exc))); self.running = False
 
     def render(self) -> None:
@@ -130,6 +187,8 @@ class App:
 
     def stop(self) -> None:
         self.running = False; self.keyboard_enabled = False
+        if self.scheduler is not None:
+            self.scheduler.stop(); self.scheduler = None
         if self.controller is not None: self.controller.release_all()
         self.input_button.configure(text="Arm input"); self.start_button.configure(state="normal"); self.status.set("Stopped")
 

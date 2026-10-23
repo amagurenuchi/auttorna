@@ -11,7 +11,7 @@ env/
 ENV/
 
 # Packaging and test artifacts
-.pytest_cache/
+.pytest*/
 .coverage
 htmlcov/
 build/
@@ -39,6 +39,7 @@ Thumbs.db
 *.pt
 *.pth
 *.onnx
+*.onnx.data
 *.bin
 *.weights
 *.ckpt

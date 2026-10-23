@@ -1,6 +1,6 @@
 {
   "weights": "weights.pt",
-  "model_variant": "base",
+  "model_variant": "nano",
   "patch_size": 16,
   "device": "auto",
   "class_names": [
@@ -9,14 +9,14 @@
   ],
   "confidence": 0.3,
   "capture": {
-    "source": "window",
-    "backend": "pillow",
+    "source": "monitor",
+    "backend": "dxcam",
     "monitor": 1,
-    "window_title": "Etterna"
+    "window_title": "Etterna: Holographic Void"
   },
   "inference": {
     "max_fps": 20,
-    "resolution": 576
+    "resolution": 384
   },
   "actions": {
     "enabled": false,
@@ -31,5 +31,38 @@
       "Right": "."
     }
   },
-  "emergency_hotkey": "f12"
+  "emergency_hotkey": "f12",
+  "roi": [
+    790,
+    54,
+    900,
+    1390
+  ],
+  "lanes": [
+    [
+      105,
+      299
+    ],
+    [
+      300,
+      490
+    ],
+    [
+      491,
+      681
+    ],
+    [
+      682,
+      873
+    ]
+  ],
+  "receptor_y": 1215,
+  "scroll_speed_px_per_s": null,
+  "display_refresh_hz": 120,
+  "global_offset_ms": 0.0,
+  "inference_backend": "directml",
+  "input_backend": "sendinput",
+  "stall_timeout_ms": 250,
+  "onnx_model": "model.onnx",
+  "lane_scancodes": {}
 }

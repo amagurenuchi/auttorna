@@ -11,10 +11,14 @@ dependencies = [
   "Pillow>=10.0",
   "mss>=9.0",
   "rfdetr>=1.0",
+  "onnxruntime-directml>=1.24",
+  "onnx>=1.16",
+  "onnxscript>=0.7",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+capture = ["dxcam>=0.0.5"]
 
 [tool.setuptools.packages.find]
 include = ["screen_detector*"]

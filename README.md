@@ -26,6 +26,38 @@ The app opens/uses an underlying terminal with timestamped debug logs. It report
 
 Press F12 at any time during capture to disable actions and release held keys.
 
+## Low-latency backends
+
+The current Windows target uses Intel Iris Xe graphics. The optional ONNX
+Runtime DirectML provider and DXCam capture backend are supported:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m screen_detector.config --check
+```
+
+The installed ONNX providers should include `DmlExecutionProvider` and
+`CPUExecutionProvider`. Set `inference_backend` to `directml` only after a
+fixed-shape ONNX model has been exported and passed parity checks; the default
+PyTorch path remains the safe reference path. Set `capture.backend` to `dxcam`
+only after validating the configured ROI and display output.
+
+Export and benchmark tools are available without committing generated model
+files:
+
+```powershell
+python -m screen_detector.tools.export_onnx --weights weights.pt --output model.onnx
+python -m screen_detector.tools.benchmark model.onnx --provider directml
+```
+
+The current DirectML benchmark for RF-DETR Nano on the target Iris Xe measures
+about 105 ms p50 and 113 ms p99 at 384x384, so it still does not meet the 20 Hz target.
+See `docs/inference_benchmark.md`; no resolution reduction is recommended
+without an accuracy study.
+
+Tap-note tracking and timestamp scheduling are implemented but not yet wired
+into gameplay control; see `docs/tracking_scheduler.md`.
+
 ## Model weights
 
 `weights.pt` is **not included in the repository** (it is gitignored) and must be obtained separately. Place it in the project root before running:
