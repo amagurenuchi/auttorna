@@ -24,4 +24,15 @@ python run.py
 
 The app opens/uses an underlying terminal with timestamped debug logs. It reports the capture source, arrow/receptor overlaps, detected visual direction, selected key, and every key-down/key-up event. Keep that terminal open while diagnosing input behavior.
 
-Press F12 at any time during capture to disable actions and release held keys. `weights.pt` is trusted by the local RF-DETR loader; do not load untrusted PyTorch checkpoints.
+Press F12 at any time during capture to disable actions and release held keys.
+
+## Model weights
+
+`weights.pt` is **not included in the repository** (it is gitignored) and must be obtained separately. Place it in the project root before running:
+
+```
+auttorna/
+└── weights.pt   ← place here
+```
+
+> **Trust notice:** `weights.pt` is loaded by the RF-DETR PyTorch loader. Only use a checkpoint you trust; do not load untrusted `.pt` files.

@@ -35,5 +35,10 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Note: Model weights and checkpoints (*.pt, *.pth, *.onnx, *.bin, *.weights, *.ckpt) are tracked via Git LFS in .gitattributes
-
+# Model weights and checkpoints (distributed separately, not committed to Git)
+*.pt
+*.pth
+*.onnx
+*.bin
+*.weights
+*.ckpt
