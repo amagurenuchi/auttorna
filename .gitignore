@@ -35,7 +35,5 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Large local model checkpoints
-weights*.pt
-*.pth
-*.onnx
+# Note: Model weights and checkpoints (*.pt, *.pth, *.onnx, *.bin, *.weights, *.ckpt) are tracked via Git LFS in .gitattributes
+
