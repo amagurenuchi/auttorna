@@ -1,0 +1,4 @@
+# Preserved label order from the legacy RF-DETR training configuration.
+classes:
+  - arrow
+  - receptor

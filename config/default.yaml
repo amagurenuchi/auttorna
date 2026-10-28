@@ -1,0 +1,32 @@
+vision:
+  backend: dxcam
+  roi:
+  - 480
+  - 417
+  - 2402
+  - 1500
+  target_hz: 20
+  input_size: 384
+  model: model.onnx
+  confidence: 0.5
+  weights: weights.pt
+  variant: nano
+sync:
+  receptor_y: 912.0
+  scroll_speed_px_s: null
+  initial_notes: 8
+  match_window_s: 0.1
+input:
+  input_latency_s: 0.0
+  start_delay_s: 0.0
+  roll_interval_s: 0.1
+  keymap: config/keymap.yaml
+chart:
+  rate: 1.0
+  auto_detect: true
+  etterna_root: C:/games/Etterna
+  songs_root: C:/games/Etterna/Songs
+  step_type: dance-single
+  difficulty: Challenge
+  path: C:/games/Etterna/Songs/Nuclear Blast 1.11/Color of Giggles (ilikexd)/Color
+    of giggles.sm

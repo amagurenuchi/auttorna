@@ -3,22 +3,25 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rfdetr-screen-control"
+name = "stepmania-vision-bot"
 version = "0.1.0"
-requires-python = ">=3.14,<3.15"
+description = "Offline chart-driven and vision-synchronised StepMania/Etterna bot"
+requires-python = ">=3.11"
 dependencies = [
-  "numpy>=1.26",
+  "PyYAML>=6.0",
   "Pillow>=10.0",
-  "mss>=9.0",
-  "rfdetr>=1.0",
-  "onnxruntime-directml>=1.24",
-  "onnx>=1.16",
-  "onnxscript>=0.7",
+  "simfile>=2.1",
+  "numpy>=1.26",
+  "onnxruntime>=1.17",
 ]
 
 [project.optional-dependencies]
+windows = ["dxcam>=0.0.5", "mss>=9.0"]
 test = ["pytest>=8.0"]
-capture = ["dxcam>=0.0.5"]
+export = ["torch>=2.2", "rfdetr>=1.0", "onnx>=1.16"]
 
 [tool.setuptools.packages.find]
-include = ["screen_detector*"]
+include = ["bot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

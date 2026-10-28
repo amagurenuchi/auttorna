@@ -43,3 +43,8 @@ Thumbs.db
 *.bin
 *.weights
 *.ckpt
+
+# Legacy prototype and local model artifacts
+/old/
+/logs/
+/captures/
