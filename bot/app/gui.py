@@ -3,6 +3,8 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
+import subprocess
+import sys
 import threading
 import yaml
 
@@ -10,6 +12,10 @@ from bot.app.controller import Controller, ControllerState
 from bot.app.pickers import pick_receptor, pick_roi
 from bot.etterna import EtternaWatcher, find_selection
 from bot.app.vision_loop import VisionConfig
+from bot.chart.parser import available_difficulties
+
+
+STEP_TYPE = "dance-single"
 
 
 class BotGui:
@@ -29,8 +35,9 @@ class BotGui:
         self.auto_detect = tk.BooleanVar(value=chart_settings.get("auto_detect", True))
         self.etterna_root = tk.StringVar(value=chart_settings.get("etterna_root", ""))
         self.songs_root = tk.StringVar(value=chart_settings.get("songs_root", ""))
-        self.step_type = tk.StringVar(value=chart_settings.get("step_type", "dance-single"))
-        self.difficulty = tk.StringVar(value=chart_settings.get("difficulty", "Challenge"))
+        # Keep the step type fixed until other dance modes are supported.
+        self.step_type = tk.StringVar(value=STEP_TYPE)
+        self.difficulty = tk.StringVar(value=str(chart_settings.get("difficulty", "Challenge")))
         self.model = tk.StringVar(value=vision.get("model", ""))
         self.weights = tk.StringVar(value=vision.get("weights", "weights.pt"))
         self.variant = tk.StringVar(value=vision.get("variant", "nano"))
@@ -49,6 +56,7 @@ class BotGui:
         self.selection_status = tk.StringVar(value="Etterna autodetect is idle")
         self.watcher: EtternaWatcher | None = None
         self._build()
+        self.chart.trace_add("write", lambda *_: self._refresh_difficulties())
         self.root.bind_all("<F12>", lambda _event: self.stop())
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(1000, self.poll_etterna)
@@ -101,8 +109,13 @@ class BotGui:
         self._field(parent, 5, "Chart file", self.chart)
         ttk.Button(parent, text="Browse", command=self.browse_chart).grid(row=5, column=2)
         self._field(parent, 6, "Rate", self.rate, 10)
-        self._field(parent, 7, "Steps type", self.step_type)
-        self._field(parent, 8, "Difficulty", self.difficulty)
+        ttk.Label(parent, text="Steps type").grid(row=7, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(parent, text=STEP_TYPE).grid(row=7, column=1, sticky="w", pady=4)
+        ttk.Label(parent, text="Difficulty").grid(row=8, column=0, sticky="w", padx=(0, 8), pady=4)
+        self.difficulty_dropdown = ttk.Combobox(parent, textvariable=self.difficulty,
+                                                state="readonly", width=31)
+        self.difficulty_dropdown.grid(row=8, column=1, sticky="ew", pady=4)
+        self._refresh_difficulties()
 
     def _build_vision_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(1, weight=1)
@@ -145,19 +158,45 @@ class BotGui:
     def browse_chart(self) -> None:
         self.pick_file(self.chart, [("StepMania charts", "*.sm *.ssc")])
 
+    def _refresh_difficulties(self) -> None:
+        values = available_difficulties(self.chart.get(), step_type=STEP_TYPE)
+        self.difficulty_dropdown["values"] = values
+        if values:
+            if self.difficulty.get().casefold() not in {value.casefold() for value in values}:
+                self.difficulty.set(values[0])
+        else:
+            self.difficulty.set("")
+
     def generate_model(self) -> None:
         """Export in a worker so the Tkinter window stays responsive."""
         self.save_settings()
-        self.status.set("Generating ONNX model; see the terminal for progress...")
+        self.status.set("ONNX export: starting...")
 
         def work() -> None:
+            output = str(Path(self.model.get() or "model.onnx").expanduser().resolve())
+            weights = str(Path(self.weights.get()).expanduser().resolve())
+            project_root = Path(__file__).resolve().parents[2]
+            python_executable = Path(sys.executable)
+            if python_executable.name.casefold() == "pythonw.exe":
+                python_executable = python_executable.with_name("python.exe")
+            command = [str(python_executable), "-u", "tools/export_onnx.py",
+                       "--weights", weights, "--output", output,
+                       "--variant", self.variant.get(), "--resolution", self.input_size.get(),
+                       "--patch-size", "16"]
             try:
-                from bot.util.export_onnx import export_model
-                output = export_model(self.weights.get(), self.model.get() or "model.onnx", self.variant.get(), resolution=int(self.input_size.get()))
-                self.root.after(0, lambda: (self.model.set(str(output)), self.status.set(f"Generated {output}")))
+                print(f"[onnx] starting dedicated console: {' '.join(command)}", flush=True)
+                self.root.after(0, lambda: self.status.set(f"ONNX export: running {self.variant.get()} model..."))
+                creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                process = subprocess.Popen(command, cwd=project_root, creationflags=creationflags)
+                return_code = process.wait()
+                if return_code:
+                    raise RuntimeError(f"export process exited with code {return_code}")
+                self.root.after(0, lambda: (self.model.set(output), self.status.set("ONNX export: complete")))
             except Exception as error:
+                print(f"[onnx] export failed: {error}", flush=True)
                 self.root.after(0, lambda: messagebox.showerror("ONNX export failed", str(error)))
-                self.root.after(0, lambda: self.status.set("ONNX export failed; see terminal"))
+                self.root.after(0, lambda: self.status.set(f"ONNX export: failed ({error})"))
+        threading.Thread(target=work, name="onnx-export", daemon=True).start()
 
 
     def pick_roi(self) -> None:
@@ -202,7 +241,7 @@ class BotGui:
         self.root.after(1000, self.poll_etterna)
 
     def save_settings(self) -> None:
-        self.settings.setdefault("chart", {}).update({"path": self.chart.get(), "rate": float(self.rate.get()), "auto_detect": self.auto_detect.get(), "etterna_root": self.etterna_root.get(), "songs_root": self.songs_root.get(), "step_type": self.step_type.get(), "difficulty": self.difficulty.get()})
+        self.settings.setdefault("chart", {}).update({"path": self.chart.get(), "rate": float(self.rate.get()), "auto_detect": self.auto_detect.get(), "etterna_root": self.etterna_root.get(), "songs_root": self.songs_root.get(), "step_type": STEP_TYPE, "difficulty": self.difficulty.get()})
         self.settings.setdefault("vision", {}).update({"model": self.model.get(), "weights": self.weights.get(), "variant": self.variant.get(), "backend": self.backend.get(), "roi": [int(value.strip()) for value in self.roi.get().split(",")], "target_hz": int(self.target_hz.get()), "input_size": int(self.input_size.get()), "confidence": float(self.confidence.get())})
         self.settings.setdefault("sync", {}).update({"receptor_y": float(self.receptor_y.get()), "scroll_speed_px_s": float(self.scroll_speed.get()) if self.scroll_speed.get().strip() else None})
         self.settings.setdefault("input", {}).update({"input_latency_s": float(self.latency.get()), "start_delay_s": float(self.start_delay.get())})
@@ -219,8 +258,8 @@ class BotGui:
             keymap = {index: variable.get().strip() for index, variable in enumerate(self.key_vars) if variable.get().strip()}
             roi = tuple(int(value.strip()) for value in self.roi.get().split(","))
             speed = float(self.scroll_speed.get()) if self.scroll_speed.get().strip() else None
-            vision = VisionConfig(self.model.get().strip(), ("arrow", "receptor"), roi, self.backend.get().strip(), int(self.target_hz.get()), int(self.input_size.get()), float(self.confidence.get()), float(self.receptor_y.get()), speed)
-            self.controller.arm(self.chart.get(), float(self.rate.get()), self.step_type.get(), self.difficulty.get(), keymap=keymap, latency_s=float(self.latency.get()), vision_config=vision)
+            vision = VisionConfig(self.model.get().strip(), ("receptor", "arrow"), roi, self.backend.get().strip(), int(self.target_hz.get()), int(self.input_size.get()), float(self.confidence.get()), float(self.receptor_y.get()), speed)
+            self.controller.arm(self.chart.get(), float(self.rate.get()), STEP_TYPE, self.difficulty.get(), keymap=keymap, latency_s=float(self.latency.get()), vision_config=vision)
             self.controller.start(float(self.start_delay.get()))
             self.status.set(self.controller.state.value)
         except (ValueError, OSError) as error:

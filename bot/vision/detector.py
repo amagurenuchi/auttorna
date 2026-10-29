@@ -36,8 +36,12 @@ class OnnxDetector:
             raise ValueError(f"capture frame must have 3 or 4 channels, got shape={image.shape}")
         from PIL import Image
         resized = Image.fromarray(image.astype("uint8"), mode="RGB").resize((self.input_size, self.input_size), Image.Resampling.BILINEAR)
-        model_image = np.asarray(resized, dtype="float32")
-        model_image = model_image[None].transpose(0, 3, 1, 2) / 255.0
+        model_image = np.asarray(resized, dtype="float32")[None].transpose(0, 3, 1, 2) / 255.0
+        # RF-DETR's exported backbone expects the same ImageNet normalization
+        # used by its native inference pipeline.
+        mean = np.asarray((0.485, 0.456, 0.406), dtype="float32").reshape(1, 3, 1, 1)
+        std = np.asarray((0.229, 0.224, 0.225), dtype="float32").reshape(1, 3, 1, 1)
+        model_image = (model_image - mean) / std
         scale_x = original_width / self.input_size
         scale_y = original_height / self.input_size
         output = [np.asarray(value) for value in self.session.run(None, {self.session.get_inputs()[0].name: model_image})]
@@ -49,7 +53,10 @@ class OnnxDetector:
         if logits is None:
             raise RuntimeError(f"ONNX output does not contain class logits: {[value.shape for value in output]}")
         logits = logits.reshape(boxes.shape[0], -1).astype("float32")
-        probabilities = 1.0 / (1.0 + np.exp(-logits))
+        # RF-DETR exports one extra no-object logit after the foreground
+        # classes. Never expose that logit as a detector label.
+        foreground_logits = logits[:, :len(self.classes)]
+        probabilities = 1.0 / (1.0 + np.exp(-foreground_logits))
         class_ids = probabilities.argmax(axis=1)
         scores = probabilities.max(axis=1)
         result = []

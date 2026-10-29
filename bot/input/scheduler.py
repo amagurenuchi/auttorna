@@ -34,10 +34,20 @@ class Scheduler:
 
     def _run(self) -> None:
         logger.info("input scheduler started")
-        for event in self.events:
-            if self._stop.is_set() or event.kind == "mine":
+        index = 0
+        while index < len(self.events):
+            if self._stop.is_set():
+                break
+            first = self.events[index]
+            index += 1
+            group = [first]
+            while index < len(self.events) and self.events[index].t == first.t:
+                group.append(self.events[index])
+                index += 1
+            playable = [event for event in group if event.kind != "mine"]
+            if not playable:
                 continue
-            target = self.song_to_wall(event.t) - self.latency_s
+            target = self.song_to_wall(first.t) - self.latency_s
             while not self._stop.is_set():
                 remaining = target - time.perf_counter()
                 if remaining <= 0:
@@ -46,13 +56,15 @@ class Scheduler:
                     time.sleep(remaining - 0.001)
             if self._stop.is_set():
                 break
-            logger.debug("input event due: song_t=%.6f col=%d kind=%s", event.t, event.col, event.kind)
-            if event.kind in {"tap", "hold_start", "roll_start"}:
-                self.emit(event.col, True)
-            if event.kind == "tap":
-                self.emit(event.col, False)
-            elif event.kind in {"hold_end", "roll_end"}:
-                self.emit(event.col, False)
+            logger.debug("input chord due: song_t=%.6f events=%d", first.t, len(playable))
+            # Press every lane in the chord before releasing any tap. This
+            # preserves simultaneous notes even when the emitter is sequential.
+            for event in playable:
+                if event.kind in {"tap", "hold_start", "roll_start"}:
+                    self.emit(event.col, True)
+            for event in playable:
+                if event.kind == "tap" or event.kind in {"hold_end", "roll_end"}:
+                    self.emit(event.col, False)
         self._release_all()
         logger.info("input scheduler finished")
 

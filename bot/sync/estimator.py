@@ -19,5 +19,8 @@ class SyncEstimator:
             if abs((sample.wall_t - sample.song_t) - median) > self.gate_s:
                 return False
         self.samples.append(sample)
-        self.clock.update(sample.wall_t, sample.song_t, self.alpha)
+        # The first accepted sample establishes the large perf_counter -> song
+        # time offset. Applying the EMA from zero would leave the clock far off
+        # when the vision gate locks after only a few bootstrap samples.
+        self.clock.update(sample.wall_t, sample.song_t, 1.0 if len(self.samples) == 1 else self.alpha)
         return True

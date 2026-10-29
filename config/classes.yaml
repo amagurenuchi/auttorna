@@ -1,4 +1,4 @@
-# Preserved label order from the legacy RF-DETR training configuration.
+# Label order observed in the current RF-DETR checkpoint.
 classes:
-  - arrow
   - receptor
+  - arrow

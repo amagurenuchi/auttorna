@@ -23,5 +23,5 @@ def match_detection(detection: Detection, events: list[NoteEvent], receptor_y: f
     candidates = [event for event in events if event.col == detection.col and abs(event.t - predicted_song) <= window_s]
     if not candidates:
         return None
-    event = min(candidates, key=lambda item: abs(item.t - arrival))
+    event = min(candidates, key=lambda item: abs(item.t - predicted_song))
     return ClockSample(arrival, event.t, arrival - event.t, event)

@@ -13,6 +13,7 @@ from bot.vision.detector import OnnxDetector
 from bot.vision.tracker import Tracker
 
 logger = logging.getLogger(__name__)
+MIN_SYNC_MOTION_PX_S = 100.0
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,9 @@ class VisionConfig:
     confidence: float = 0.5
     receptor_y: float = 0.0
     scroll_speed_px_s: float | None = None
-    initial_notes: int = 4
+    # One valid arrow sample is enough to start; later samples are not needed
+    # before scheduling because the first sample now initializes the clock.
+    initial_notes: int = 1
     match_window_s: float = 0.12
 
 
@@ -57,13 +60,21 @@ class VisionGate:
             frame_count = 0
             last_detection_log = 0.0
             logger.info("vision gate started: model=%s roi=%s target_hz=%d", self.config.model, self.config.roi, self.config.target_hz)
-            while not self.stop_event.is_set() and not self.locked.is_set():
+            while not self.stop_event.is_set():
                 frame = capture.read()
                 if frame is None:
                     time.sleep(0.001)
                     continue
                 detections = detector.detect(frame.pixels, frame.captured_at)
-                tracks = tracker.update(detections)
+                arrow_detections = [d for d in detections if d.cls.lower() == "arrow"]
+                tracks = tracker.update(arrow_detections)
+                # A static receptor can occasionally be classified as an
+                # arrow. It must show real frame-to-frame motion before it is
+                # allowed to influence speed estimation or clock matching.
+                moving_arrows = [
+                    detection for detection, track in zip(arrow_detections, tracks)
+                    if abs(track.velocity) >= MIN_SYNC_MOTION_PX_S
+                ]
                 frame_count += 1
                 now = time.perf_counter()
                 if now - last_detection_log >= 2.0:
@@ -78,15 +89,18 @@ class VisionGate:
                 speed = self.config.scroll_speed_px_s or tracker.scroll_speed
                 if speed <= 1:
                     continue
-                for detection in detections:
+                for detection in moving_arrows:
                     bootstrap_window = max(self.config.match_window_s, 0.5) if self.samples < self.config.initial_notes else self.config.match_window_s
                     sample = match_detection(detection, list(self.schedule.events), receptor_y, speed, window_s=bootstrap_window, wall_to_song=self.clock.song_at)
                     if sample and estimator.update(sample):
                         self.samples += 1
                         logger.debug("sync sample: wall=%.6f song=%.6f residual=%.3fms", sample.wall_t, sample.song_t, sample.residual * 1000)
-                        if self.samples >= self.config.initial_notes:
-                            self.clock.a = estimator.clock.a
-                            self.clock.b = estimator.clock.b
+                        # Keep correcting the shared clock after the initial
+                        # lock; the scheduler reads this clock for each future
+                        # event, so corrections affect notes still ahead.
+                        self.clock.a = estimator.clock.a
+                        self.clock.b = estimator.clock.b
+                        if not self.locked.is_set() and self.samples >= self.config.initial_notes:
                             now_song = self.clock.song_at(time.perf_counter())
                             upcoming = [event for event in self.schedule.events if event.t >= now_song]
                             self.scheduler.replace(upcoming)

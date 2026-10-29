@@ -67,7 +67,7 @@ the Songs folder and chart manually instead.
 
 Detector labels must remain in training order in
 [`config/classes.yaml`](config/classes.yaml). The current label map is
-`arrow`, `receptor`. Place the default detector at `model.onnx` in the project
+`receptor`, `arrow`. Place the default detector at `model.onnx` in the project
 root; its companion `model.onnx.data` file must be beside it when the model
 uses external ONNX data. Model files are intentionally ignored by Git; do not
 load an untrusted checkpoint.

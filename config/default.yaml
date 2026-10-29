@@ -1,20 +1,20 @@
 vision:
   backend: dxcam
   roi:
-  - 480
-  - 417
-  - 2402
-  - 1500
+  - 159
+  - 238
+  - 2711
+  - 1681
   target_hz: 20
   input_size: 384
-  model: model.onnx
+  model: C:/Projects/auttorna/model.onnx
   confidence: 0.5
-  weights: weights.pt
+  weights: C:/Projects/auttorna/weights.pt
   variant: nano
 sync:
-  receptor_y: 912.0
-  scroll_speed_px_s: null
-  initial_notes: 8
+  receptor_y: 1216.0
+  scroll_speed_px_s: 1030.0
+  initial_notes: 1
   match_window_s: 0.1
 input:
   input_latency_s: 0.0
@@ -28,5 +28,5 @@ chart:
   songs_root: C:/games/Etterna/Songs
   step_type: dance-single
   difficulty: Challenge
-  path: C:/games/Etterna/Songs/Nuclear Blast 1.11/Color of Giggles (ilikexd)/Color
-    of giggles.sm
+  path: C:/games/Etterna/Songs/(^^) ChordJack Collection/Cold planet [Mongol]/Cold
+    planet.sm

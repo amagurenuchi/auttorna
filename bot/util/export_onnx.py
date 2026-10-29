@@ -7,7 +7,7 @@ import sys
 def export_model(weights: str | Path = "weights.pt", output: str | Path = "model.onnx",
                  variant: str = "nano", labels: list[str] | None = None,
                  resolution: int = 384, patch_size: int = 16) -> Path:
-    labels = labels or ["arrow", "receptor"]
+    labels = labels or ["receptor", "arrow"]
     try:
         import torch
     except ImportError as error:
@@ -24,6 +24,8 @@ def export_model(weights: str | Path = "weights.pt", output: str | Path = "model
         raise FileNotFoundError(f"checkpoint not found: {weights_path}")
     block_size = patch_size * 4
     shape = ((int(resolution) + block_size - 1) // block_size) * block_size
+    print(f"[onnx] exporting RF-DETR {variant} checkpoint: {weights_path}", flush=True)
+    print(f"[onnx] input={shape}x{shape}, classes={len(labels)}, output={Path(output).expanduser().resolve()}", flush=True)
     kwargs = {"pretrain_weights": str(weights_path), "patch_size": patch_size, "num_classes": len(labels), "device": "cpu"}
     try:
         model = architectures[variant](trust_checkpoint=True, **kwargs)
@@ -41,4 +43,5 @@ def export_model(weights: str | Path = "weights.pt", output: str | Path = "model
         wrapper.export()
     torch.onnx.export(wrapper, dummy, str(destination), input_names=["images"], opset_version=18,
                       do_constant_folding=True, external_data=True)
+    print(f"[onnx] export complete: {destination}", flush=True)
     return destination

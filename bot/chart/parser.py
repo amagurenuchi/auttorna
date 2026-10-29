@@ -19,6 +19,43 @@ def _blocks(text: str, key: str) -> list[str]:
     return re.findall(rf"#{key}\s*:(.*?)(?=\n#|\Z)", text, re.I | re.S)
 
 
+def _note_fields(text: str, position: re.Match[str]) -> dict[str, str]:
+    start = position.end()
+    end_match = re.search(r";", text[start:])
+    if not end_match:
+        return {}
+    block = text[start:start + end_match.start()]
+    fields = _tags(block)
+    sm_fields = block.split(":", 5)
+    if len(sm_fields) >= 6:
+        fields = {"STEPSTYPE": sm_fields[0].strip(), "DIFFICULTY": sm_fields[2].strip()}
+    if "STEPSTYPE" not in fields:
+        metadata_start = text.rfind("#NOTEDATA", 0, position.start())
+        metadata = text[metadata_start:position.start()] if metadata_start >= 0 else text[:position.start()]
+        fields = {**_tags(metadata), **fields}
+    return fields
+
+
+def available_difficulties(path: str | Path, *, step_type: str | None = None) -> tuple[str, ...]:
+    """Return difficulties present in a chart, preserving file order."""
+    chart_path = Path(path)
+    if chart_path.suffix.lower() not in {".sm", ".ssc"}:
+        return ()
+    try:
+        text = chart_path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return ()
+    result: list[str] = []
+    for position in re.finditer(r"#NOTES\s*:", text, re.I):
+        fields = _note_fields(text, position)
+        if step_type and fields.get("STEPSTYPE", "").lower() != step_type.lower():
+            continue
+        difficulty = fields.get("DIFFICULTY", "").strip()
+        if difficulty and difficulty.casefold() not in {item.casefold() for item in result}:
+            result.append(difficulty)
+    return tuple(result)
+
+
 def _selected_notes(text: str, step_type: str | None, difficulty: str | None) -> str:
     positions = list(re.finditer(r"#NOTES\s*:", text, re.I))
     for position in positions:
@@ -27,14 +64,7 @@ def _selected_notes(text: str, step_type: str | None, difficulty: str | None) ->
         if not end_match:
             continue
         block = text[start:start + end_match.start()]
-        fields = _tags(block)
-        sm_fields = block.split(":", 5)
-        if len(sm_fields) >= 6:
-            fields = {"STEPSTYPE": sm_fields[0].strip(), "DIFFICULTY": sm_fields[2].strip()}
-        if "STEPSTYPE" not in fields:
-            metadata_start = text.rfind("#NOTEDATA", 0, position.start())
-            metadata = text[metadata_start:position.start()] if metadata_start >= 0 else text[:position.start()]
-            fields = {**_tags(metadata), **fields}
+        fields = _note_fields(text, position)
         if step_type and fields.get("STEPSTYPE", "").lower() != step_type.lower():
             continue
         if difficulty and fields.get("DIFFICULTY", "").lower() != difficulty.lower():
