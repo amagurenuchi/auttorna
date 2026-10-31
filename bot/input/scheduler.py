@@ -19,41 +19,67 @@ class Scheduler:
         self.latency_s = latency_s
         self.events: list[NoteEvent] = []
         self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._events_lock = threading.Lock()
+        self._revision = 0
         self._thread: threading.Thread | None = None
 
     def replace(self, events: Iterable[NoteEvent]) -> None:
-        self.events = sorted(events, key=lambda event: event.t)
-        logger.info("input schedule loaded: %d events", len(self.events))
+        replacement = sorted(events, key=lambda event: event.t)
+        with self._events_lock:
+            self.events = replacement
+            self._revision += 1
+        self._wake.set()
+        logger.info("input schedule loaded: %d events", len(replacement))
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        self._wake.clear()
         self._thread = threading.Thread(target=self._run, name="input-scheduler", daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
         logger.info("input scheduler started")
         index = 0
-        while index < len(self.events):
+        revision = -1
+        while not self._stop.is_set():
             if self._stop.is_set():
                 break
-            first = self.events[index]
+            with self._events_lock:
+                current_revision = self._revision
+                events = self.events[:]
+            if current_revision != revision:
+                revision = current_revision
+                index = 0
+                continue
+            if index >= len(events):
+                break
+            first = events[index]
             index += 1
             group = [first]
-            while index < len(self.events) and self.events[index].t == first.t:
-                group.append(self.events[index])
+            while index < len(events) and events[index].t == first.t:
+                group.append(events[index])
                 index += 1
             playable = [event for event in group if event.kind != "mine"]
             if not playable:
                 continue
             target = self.song_to_wall(first.t) - self.latency_s
             while not self._stop.is_set():
+                with self._events_lock:
+                    replaced = self._revision != revision
+                if replaced:
+                    break
                 remaining = target - time.perf_counter()
                 if remaining <= 0:
                     break
                 if remaining > 0.002:
-                    time.sleep(remaining - 0.001)
+                    self._wake.wait(min(remaining - 0.001, 0.05))
+                    self._wake.clear()
+            with self._events_lock:
+                if self._revision != revision:
+                    continue
             if self._stop.is_set():
                 break
             logger.debug("input chord due: song_t=%.6f events=%d", first.t, len(playable))
@@ -75,7 +101,10 @@ class Scheduler:
     def stop(self) -> None:
         logger.info("input scheduler stopping")
         self._stop.set()
-        self.events.clear()
+        self._wake.set()
+        with self._events_lock:
+            self.events.clear()
+            self._revision += 1
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=1.0)
         self._release_all()

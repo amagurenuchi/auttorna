@@ -52,6 +52,11 @@ Adjust these values before a real run:
 - `vision.model`: path to the exported ONNX detector.
 - `vision.weights`: trusted RF-DETR checkpoint used for on-demand export.
 - `vision.variant`: RF-DETR architecture used during export.
+- `vision.provider`: ONNX Runtime provider (`auto`, `cuda`, `directml`, or `cpu`).
+  `auto` prefers an installed GPU provider and falls back to CPU.
+- `vision.input_size`: must match the exported model; `256` is the faster
+  default. Generate it with `python tools/export_onnx.py --resolution 256
+  --output model_256.onnx`.
 - `vision.target_hz`: capture rate, normally 10-20 Hz.
 - `sync.receptor_y`: receptor position inside the ROI.
 - `sync.scroll_speed_px_s`: set a measured value, or leave it `null` to estimate it.
@@ -123,6 +128,12 @@ For the first run:
 6. Watch the status and logs. Press **Stop** or F12 immediately if the game
    loses focus or the detector behaves unexpectedly.
 
+The vision clock locks only after a longer ordered note sequence. Check the
+`vision sequence locked` log line: its `offset`, `first_chart_t`, and residual
+show which chart position was selected. If the offset is still wrong, verify
+that `sync.receptor_y` is measured inside the ROI and that
+`sync.scroll_speed_px_s` is the actual screen scroll speed.
+
 The command-line parser can also be checked without launching the GUI:
 
 ```powershell
@@ -158,7 +169,10 @@ Verbose output includes each parsed note (`song_t`, lane, and type), the number
 and duration of scheduled events, vision sync samples, the moment the vision
 clock locks, each event becoming due, and each Windows key-down/key-up attempt.
 The bot sends no keys while it is in `LOCKING`; it must first see enough notes
-in the configured ROI to match them to the chart. If the model cannot load,
+in the configured ROI to match them to the chart. After locking, it continues
+checking note crossings and applies a correction only after several consistent
+crossings disagree with the current note-field clock. The correction reloads
+only future input and will not replay already-passed chart events. If the model cannot load,
 the ROI is wrong, the receptor line is wrong, or a chart parses with zero
 events, the terminal reports that explicitly.
 

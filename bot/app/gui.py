@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 import yaml
 
 from bot.app.controller import Controller, ControllerState
@@ -16,6 +17,8 @@ from bot.chart.parser import available_difficulties
 
 
 STEP_TYPE = "dance-single"
+LOCKING_SCROLL_SPEED_PX_S = 180.0
+LOCKING_TRANSPARENT_COLOR = "#18212b"
 
 
 class BotGui:
@@ -42,6 +45,7 @@ class BotGui:
         self.weights = tk.StringVar(value=vision.get("weights", "weights.pt"))
         self.variant = tk.StringVar(value=vision.get("variant", "nano"))
         self.backend = tk.StringVar(value=vision.get("backend", "dxcam"))
+        self.provider = tk.StringVar(value=vision.get("provider", "auto"))
         self.roi = tk.StringVar(value=", ".join(map(str, vision.get("roi", [0, 0, 0, 0]))))
         self.target_hz = tk.StringVar(value=str(vision.get("target_hz", 20)))
         self.input_size = tk.StringVar(value=str(vision.get("input_size", 384)))
@@ -53,13 +57,16 @@ class BotGui:
         keys = self._load_keymap(input_settings.get("keymap", "config/keymap.yaml"))
         self.key_vars = [tk.StringVar(value=keys.get(index, "")) for index in range(4)]
         self.status = tk.StringVar(value=ControllerState.IDLE.value)
+        self._runtime_state = self.controller.state
         self.selection_status = tk.StringVar(value="Etterna autodetect is idle")
         self.watcher: EtternaWatcher | None = None
         self._build()
+        self._build_locking_overlay()
         self.chart.trace_add("write", lambda *_: self._refresh_difficulties())
         self.root.bind_all("<F12>", lambda _event: self.stop())
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(1000, self.poll_etterna)
+        self.root.after(16, self.poll_runtime)
 
     def _load_settings(self) -> dict:
         try:
@@ -92,6 +99,114 @@ class BotGui:
         ttk.Button(bottom, text="Stop / release (F12)", command=self.stop).pack(side="left", padx=6)
         ttk.Button(bottom, text="Save settings", command=self.save_settings).pack(side="right")
         ttk.Label(outer, textvariable=self.status).pack(anchor="w", pady=(8, 0))
+
+    def _build_locking_overlay(self) -> None:
+        """Create the small on-screen event preview used while vision locks."""
+        self.locking_overlay = tk.Toplevel(self.root)
+        self.locking_overlay.title("Input plan")
+        self.locking_overlay.overrideredirect(True)
+        self.locking_overlay.attributes("-topmost", True)
+        self.locking_overlay.attributes("-alpha", 0.94)
+        self.locking_overlay.configure(bg=LOCKING_TRANSPARENT_COLOR)
+        try:
+            # Windows color-key transparency lets the highway float over the
+            # game without adding an opaque panel behind the bars.
+            self.locking_overlay.attributes("-transparentcolor", LOCKING_TRANSPARENT_COLOR)
+        except tk.TclError:
+            pass
+
+        panel = tk.Frame(self.locking_overlay, bg=LOCKING_TRANSPARENT_COLOR, padx=12, pady=9)
+        panel.pack(fill="both", expand=True)
+        self.locking_title = tk.Label(
+            panel, text="INPUT ARMED  •  LOCKING", bg=LOCKING_TRANSPARENT_COLOR, fg="#8ee6a8",
+            font=("Segoe UI", 10, "bold"), anchor="w",
+        )
+        self.locking_title.pack(fill="x")
+        self.locking_hint = tk.Label(
+            panel, text="Waiting for vision clock lock", bg=LOCKING_TRANSPARENT_COLOR, fg="#b8c5d1",
+            font=("Segoe UI", 9), anchor="w",
+        )
+        self.locking_hint.pack(fill="x", pady=(2, 6))
+        self.locking_canvas = tk.Canvas(
+            panel, width=300, height=190, bg=LOCKING_TRANSPARENT_COLOR, highlightthickness=0,
+        )
+        self.locking_canvas.pack(fill="both", expand=True)
+        self.locking_overlay.withdraw()
+
+    def _position_locking_overlay(self) -> None:
+        self.locking_overlay.update_idletasks()
+        width = self.locking_overlay.winfo_reqwidth()
+        height = self.locking_overlay.winfo_reqheight()
+        screen_width = self.locking_overlay.winfo_screenwidth()
+        self.locking_overlay.geometry(f"{width}x{height}+{max(8, screen_width - width - 18)}+18")
+
+    def _refresh_locking_overlay(self) -> None:
+        if self.controller.state != ControllerState.LOCKING:
+            self.locking_overlay.withdraw()
+            return
+
+        keymap = {index: variable.get().strip() or "?" for index, variable in enumerate(self.key_vars)}
+        vision_gate = self.controller.vision_gate
+        locked = vision_gate is not None and vision_gate.locked.is_set()
+        if not locked:
+            self.locking_title.configure(text="INPUT ARMED  •  LOCKING")
+            self.locking_hint.configure(text="Calibrating clock — note stream starts after lock")
+            detected = vision_gate.detected_song_t
+            timestamp = "-" if detected is None else f"{detected:.3f}s"
+            self.locking_hint.configure(text=f"Detected timestamp: {timestamp} - calibrating clock")
+            self._draw_locking_highway(0.0, [], keymap)
+        else:
+            self.locking_title.configure(text="INPUT ARMED  •  CLOCK LOCKED")
+            locked_song_t = vision_gate.locked_song_t
+            timestamp = "—" if locked_song_t is None else f"{locked_song_t:.3f}s"
+            self.locking_hint.configure(text=f"Chart locked at {timestamp} • input schedule active")
+            now_song = self.controller.clock.song_at(time.perf_counter())
+            detected = vision_gate.detected_song_t
+            detected_timestamp = "-" if detected is None else f"{detected:.3f}s"
+            self.locking_hint.configure(text=f"Detected: {detected_timestamp} - clock locked")
+            self._draw_locking_highway(now_song, list(self.controller.scheduler.events), keymap)
+        self.locking_overlay.deiconify()
+        self._position_locking_overlay()
+
+    def _draw_locking_highway(self, now_song: float, events: list, keymap: dict[int, str]) -> None:
+        """Draw the upcoming schedule as falling bars in the four lanes."""
+        canvas = self.locking_canvas
+        canvas.delete("all")
+        canvas.update_idletasks()
+        width = max(240, canvas.winfo_width())
+        height = max(160, canvas.winfo_height())
+        lane_width = width / 4
+        top = 8
+        receptor_y = height - 25
+        scroll_distance = receptor_y - top
+        horizon_s = scroll_distance / LOCKING_SCROLL_SPEED_PX_S
+
+        for lane in range(4):
+            left = lane * lane_width
+            right = (lane + 1) * lane_width
+            canvas.create_line(left, top, left, receptor_y, fill="#ffffff", stipple="gray75")
+            canvas.create_text((left + right) / 2, height - 11, text=keymap.get(lane, "?").upper(), fill="#b8c5d1", font=("Segoe UI", 9, "bold"))
+        canvas.create_line(0, receptor_y, width, receptor_y, fill="#8ee6a8", width=2)
+
+        for event in events:
+            eta = event.t - now_song
+            if not 0.0 <= eta <= horizon_s or not 0 <= event.col < 4:
+                continue
+            center_x = (event.col + 0.5) * lane_width
+            center_y = receptor_y - (eta / horizon_s) * (receptor_y - top)
+            bar_width = lane_width * 0.56
+            canvas.create_rectangle(
+                center_x - bar_width / 2, center_y - 7,
+                center_x + bar_width / 2, center_y + 7,
+                fill="#ffffff", stipple="gray50", outline="#ffffff",
+            )
+
+    def poll_runtime(self) -> None:
+        if self.controller.state != self._runtime_state:
+            self._runtime_state = self.controller.state
+            self.status.set(self.controller.state.value)
+        self._refresh_locking_overlay()
+        self.root.after(100, self.poll_runtime)
 
     def _field(self, parent: ttk.Frame, row: int, label: str, variable: tk.Variable, width: int = 34) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
@@ -126,11 +241,12 @@ class BotGui:
         ttk.Button(parent, text="Generate ONNX", command=self.generate_model).grid(row=2, column=1, sticky="w", pady=(2, 8))
         self._field(parent, 3, "RF-DETR variant", self.variant)
         self._field(parent, 4, "Capture backend", self.backend)
-        self._field(parent, 5, "ROI: left, top, right, bottom", self.roi)
-        ttk.Button(parent, text="Pick ROI from screen", command=self.pick_roi).grid(row=5, column=2, sticky="w")
-        self._field(parent, 6, "Vision rate (Hz)", self.target_hz, 10)
-        self._field(parent, 7, "Model input size", self.input_size, 10)
-        self._field(parent, 8, "Detection confidence", self.confidence, 10)
+        self._field(parent, 5, "ONNX provider (auto/cuda/directml/cpu)", self.provider)
+        self._field(parent, 6, "ROI: left, top, right, bottom", self.roi)
+        ttk.Button(parent, text="Pick ROI from screen", command=self.pick_roi).grid(row=6, column=2, sticky="w")
+        self._field(parent, 7, "Vision rate (Hz)", self.target_hz, 10)
+        self._field(parent, 8, "Model input size", self.input_size, 10)
+        self._field(parent, 9, "Detection confidence", self.confidence, 10)
 
     def _build_input_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(1, weight=1)
@@ -242,7 +358,7 @@ class BotGui:
 
     def save_settings(self) -> None:
         self.settings.setdefault("chart", {}).update({"path": self.chart.get(), "rate": float(self.rate.get()), "auto_detect": self.auto_detect.get(), "etterna_root": self.etterna_root.get(), "songs_root": self.songs_root.get(), "step_type": STEP_TYPE, "difficulty": self.difficulty.get()})
-        self.settings.setdefault("vision", {}).update({"model": self.model.get(), "weights": self.weights.get(), "variant": self.variant.get(), "backend": self.backend.get(), "roi": [int(value.strip()) for value in self.roi.get().split(",")], "target_hz": int(self.target_hz.get()), "input_size": int(self.input_size.get()), "confidence": float(self.confidence.get())})
+        self.settings.setdefault("vision", {}).update({"model": self.model.get(), "weights": self.weights.get(), "variant": self.variant.get(), "backend": self.backend.get(), "provider": self.provider.get(), "roi": [int(value.strip()) for value in self.roi.get().split(",")], "target_hz": int(self.target_hz.get()), "input_size": int(self.input_size.get()), "confidence": float(self.confidence.get())})
         self.settings.setdefault("sync", {}).update({"receptor_y": float(self.receptor_y.get()), "scroll_speed_px_s": float(self.scroll_speed.get()) if self.scroll_speed.get().strip() else None})
         self.settings.setdefault("input", {}).update({"input_latency_s": float(self.latency.get()), "start_delay_s": float(self.start_delay.get())})
         self.config_path.write_text(yaml.safe_dump(self.settings, sort_keys=False), encoding="utf-8")
@@ -258,16 +374,19 @@ class BotGui:
             keymap = {index: variable.get().strip() for index, variable in enumerate(self.key_vars) if variable.get().strip()}
             roi = tuple(int(value.strip()) for value in self.roi.get().split(","))
             speed = float(self.scroll_speed.get()) if self.scroll_speed.get().strip() else None
-            vision = VisionConfig(self.model.get().strip(), ("receptor", "arrow"), roi, self.backend.get().strip(), int(self.target_hz.get()), int(self.input_size.get()), float(self.confidence.get()), float(self.receptor_y.get()), speed)
+            vision = VisionConfig(self.model.get().strip(), ("receptor", "arrow"), roi, self.backend.get().strip(), int(self.target_hz.get()), int(self.input_size.get()), float(self.confidence.get()), float(self.receptor_y.get()), speed, provider=self.provider.get().strip())
             self.controller.arm(self.chart.get(), float(self.rate.get()), STEP_TYPE, self.difficulty.get(), keymap=keymap, latency_s=float(self.latency.get()), vision_config=vision)
             self.controller.start(float(self.start_delay.get()))
+            self._runtime_state = self.controller.state
             self.status.set(self.controller.state.value)
         except (ValueError, OSError) as error:
             messagebox.showerror("Cannot start", str(error))
 
     def stop(self) -> None:
         self.controller.stop()
+        self._runtime_state = self.controller.state
         self.status.set(self.controller.state.value)
+        self._refresh_locking_overlay()
 
     def close(self) -> None:
         self.stop()

@@ -27,6 +27,30 @@ def _tag(text: str, name: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _strip_msd(text: str) -> str:
+    """Remove Etterna's difficulty/rate annotation from now-playing text."""
+    return re.sub(
+        r"\s+MSD\s*:\s*[0-9]+(?:\.[0-9]+)?(?:\s*-\s*@?\s*[0-9]+(?:\.[0-9]+)?x?)?\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
+
+
+def _combined_fields(text: str) -> tuple[str, str, str]:
+    """Parse the common ``title by artist in group`` display format."""
+    cleaned = _strip_msd(text)
+    display = re.match(r"^(.*?)\s+by\s+(.*?)\s+in\s+(.+)$", cleaned, re.I)
+    if display:
+        return tuple(part.strip() for part in display.groups())
+    fields = [part.strip() for part in re.split(r"\||\t|\s+-\s+", cleaned) if part.strip()]
+    return (
+        fields[0] if fields else "",
+        fields[1] if len(fields) > 1 else "",
+        fields[2] if len(fields) > 2 else "",
+    )
+
+
 def _chart_metadata(path: Path) -> tuple[str, str, str]:
     try:
         text = path.read_text(encoding="utf-8-sig", errors="replace")
@@ -37,7 +61,18 @@ def _chart_metadata(path: Path) -> tuple[str, str, str]:
 
 def _rate(root: Path, combined: str) -> float:
     value = _read(_find_file(root, "nowplaying_rate")) or _read(_find_file(root, "nowplaying_rate.txt"))
-    matches = re.findall(r"(?:rate\s*[:=]\s*)?([0-9]+(?:\.[0-9]+)?)", value or combined, re.I)
+    if not value:
+        # In the combined display format, the rate is the value after '@'.
+        # Check it before stripping the MSD annotation so MSD is never used
+        # as the playback rate.
+        explicit_rate = re.search(r"@\s*([0-9]+(?:\.[0-9]+)?)\s*x?\b", combined, re.I)
+        if explicit_rate:
+            return float(explicit_rate.group(1))
+    matches = re.findall(
+        r"(?:rate\s*[:=]\s*)?([0-9]+(?:\.[0-9]+)?)",
+        _strip_msd(value or combined),
+        re.I,
+    )
     try:
         return float(matches[-1]) if matches else 1.0
     except ValueError:
@@ -61,10 +96,10 @@ def find_selection(etterna_root: str | Path, *, chart_root: str | Path | None = 
     if combined and not (title and artist):
         # The documented combined format is theme-defined; use pipe, tab, or
         # common comma-separated layouts without making it a hard dependency.
-        fields = [part.strip() for part in re.split(r"\||\t|\s+-\s+", combined) if part.strip()]
-        title = title or (fields[0] if fields else "")
-        artist = artist or (fields[1] if len(fields) > 1 else "")
-        group = group or (fields[2] if len(fields) > 2 else "")
+        fields = _combined_fields(combined)
+        title = title or fields[0]
+        artist = artist or fields[1]
+        group = group or fields[2]
     if not title:
         return None
     search_root = Path(chart_root).expanduser() if chart_root else root / "Songs"
